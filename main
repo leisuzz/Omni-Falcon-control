@@ -1,0 +1,279 @@
+
+#include "stdafx.h"
+#include "Robot_Omni.hpp"
+#include "Robot_Falcon.hpp"
+
+//Timer Constants
+#define TIME_PERIOD 1 
+#define TIME_RESOLUTION 1 
+
+//Timer Vars
+TIMECAPS tc;
+UINT wTimerRes;
+LARGE_INTEGER freq;
+int dataIndex = 0;
+
+//Robot and Leap Data Structures
+const int memLength = 480000;
+
+struct robotData{
+	int index; //Index 
+	float xPos;	//Current x Position
+	float yPos;	//Current y Position
+	float zPos;	//Current z Position
+	float xDes;	//Desired x Position
+	float yDes; //Desired y Position
+	float zDes; //Desired z Position
+	float xForce;	//Force in x Direction
+	float yForce;	//Force in y Direction
+	float zForce;	//Force in z Direction
+};
+
+robotData * masterData;
+robotData * slaveData;
+
+
+//Main Loop Function
+void CALLBACK mainloop(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2);
+
+//Robot Objects
+Omni Omni1;
+Falcon Falcon1;
+
+//Delay Array
+const int BufferLength = 100;// we could change the buffer length to 1 20 50 100
+int bufInd = 0;
+int bufDelay;
+float BufferPos1[3][BufferLength];
+float BufferPos2[3][BufferLength];
+
+//Main
+using namespace std;
+int _tmain(int argc, _TCHAR* argv[])
+{
+	cout << "ECE 464 Lab 2" << endl << endl;
+	cout << "Allocating Memory" << endl << endl;
+	masterData = new robotData[memLength]; // Allocate save data on the heap
+	slaveData = new robotData[memLength]; // Allocate save data on the heap
+	
+	for (int ii = 0; ii < BufferLength; ii++)
+	{
+		BufferPos1[0][ii] = 0;
+		BufferPos1[1][ii] = 0;
+		BufferPos1[2][ii] = 0;
+		BufferPos2[0][ii] = 0;
+		BufferPos2[1][ii] = 0;
+		BufferPos2[2][ii] = 0;
+	}
+
+	cout << "Initalizing Robots" << endl;
+
+	//Try to Initalize Robots
+	if (Falcon1.Init(0) && Omni1.Init("PHANToM_M1"))
+	{ //Init Succeeded
+
+		//Enable Robots
+		Falcon::enableAll();
+		Omni::enableAll();
+		
+
+		//Set up Multimedia Time Services
+		if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) 
+		{
+			return -1;
+		}
+		wTimerRes = min(max(tc.wPeriodMin, TIME_RESOLUTION), tc.wPeriodMax);
+		timeBeginPeriod(wTimerRes); 
+
+		//Start Main Loop
+		cout << "Starting Main Loop, Press 'q' to Stop" << endl;
+		MMRESULT timer = timeSetEvent(TIME_PERIOD, 0, mainloop, 0, TIME_PERIODIC);
+
+		//Check for Keyboard Press
+		char k1;
+		k1=_getch();
+		while (k1!='q') //While 'q' is not pressed
+		{
+			k1=_getch();
+		}
+
+		//Stop Main Loop
+		timeKillEvent(timer);
+		timeEndPeriod(wTimerRes);
+
+		//Disable Robots
+		Omni::disableAll();
+		Falcon::disableAll();
+
+		//Uninitalize Robots
+		Omni1.Uninit();
+		Falcon1.Uninit(); 
+
+		//Save Data From Loop
+		ofstream DataFile1, DataFile2;
+		
+		//Novint Falcon (Master)
+		DataFile1.open("FalconMaster.txt"); //File Save Location
+		for(int s = 0; s < min(memLength,dataIndex); s++)
+		{
+		DataFile1   <<
+			masterData[s].index << '\t' <<
+			masterData[s].xPos << '\t' <<
+			masterData[s].yPos << '\t' <<
+			masterData[s].zPos << '\t' <<
+			masterData[s].xDes << '\t' <<
+			masterData[s].yDes << '\t' <<
+			masterData[s].zDes << '\t' <<
+			masterData[s].xForce << '\t' <<
+			masterData[s].yForce << '\t' <<
+			masterData[s].zForce << endl;
+		}
+
+		//Phantom Omni (Slave)
+		DataFile2.open("OmniSlave.txt"); //File Save Location
+		for (int s = 0; s < min(memLength, dataIndex); s++)
+		{
+		DataFile2 <<
+			slaveData[s].index << '\t' <<
+			slaveData[s].xPos << '\t' <<
+			slaveData[s].yPos << '\t' <<
+			slaveData[s].zPos << '\t' <<
+			slaveData[s].xDes << '\t' <<
+			slaveData[s].yDes << '\t' <<
+			slaveData[s].zDes << '\t' <<
+			slaveData[s].xForce << '\t' <<
+			slaveData[s].yForce << '\t' <<
+			slaveData[s].zForce << endl;
+		}
+
+		DataFile1.close();
+		DataFile2.close();
+	}else{//Init Failed
+		cout << "Failed to Initialize Robots" << endl;
+	}
+
+	cout << "Press Enter to Quit" << endl;
+	char hold[256];
+	gets_s(hold);
+	return 0;
+}
+
+//Main Loop For Control, Called Every 1ms (1000Hz)
+void CALLBACK mainloop(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2)
+{
+	float xRef1,yRef1,zRef1;
+	double pos1[3],force1[3];
+	float xRef2, yRef2, zRef2;
+	double pos2[3], force2[3];
+	double pError1[3], pError2[3];
+
+
+	//Get Robot Postion
+	Falcon1.getPos(pos1);
+	Omni1.getPos(pos2);
+
+	//Demo Control Loop
+	float tPeriod=5000.0; // 5 sec.
+
+	//Set Current Position in Buffer
+	BufferPos1[0][bufInd] = pos1[0];
+	BufferPos1[1][bufInd] = pos1[1];
+	BufferPos1[2][bufInd] = pos1[2];
+
+	BufferPos2[0][bufInd] = pos2[0];
+	BufferPos2[1][bufInd] = pos2[1];
+	BufferPos2[2][bufInd] = pos2[2];
+
+	//Get Delayed Values
+	bufDelay = (bufInd + 1) % BufferLength;
+
+	xRef1 = 0.5*BufferPos2[0][bufDelay];
+	yRef1 = 0.5*BufferPos2[1][bufDelay];
+	zRef1 = 0.5*BufferPos2[2][bufDelay];
+
+	xRef2 = 2 * BufferPos1[0][bufDelay];
+	yRef2 = 2 * BufferPos1[1][bufDelay];
+	zRef2 = 2 * BufferPos1[2][bufDelay];
+
+	
+	//xRef1 = 30*sin(2*3.14*((float)dataIndex)/tPeriod);
+	//yRef1 = 30*cos(2*3.14*((float)dataIndex)/tPeriod);
+	//zRef1 = 0;
+
+	//xRef2 = 30*sin(2*3.14*((float)dataIndex)/tPeriod);
+	//yRef2 = 30*cos(2*3.14*((float)dataIndex)/tPeriod);
+	//zRef2 = 0;
+
+	pError1[0] = xRef1 - pos1[0];
+	pError1[1] = yRef1 - pos1[1];
+	pError1[2] = zRef1 - pos1[2];
+
+
+	pError2[0] = xRef2 - pos2[0];
+	pError2[1] = yRef2 - pos2[1];
+	pError2[2] = zRef2 - pos2[2];
+
+
+	float gain1 = 0.3;
+	force1[0] = gain1*(pError1[0]);
+	force1[1] = gain1*(pError1[1]);
+	force1[2] = gain1*(pError1[2]);
+
+	float gain2 = 0.2;
+	force2[0] = gain2*(pError2[0]);
+	force2[1] = gain2*(pError2[1]);
+	force2[2] = gain2*(pError2[2]);
+
+	//Falcon1.setForce(force1);
+	Omni1.setForce(force2);
+
+	//Save Robot Data Every Cycle
+	if(dataIndex < memLength){
+		//Master Data (Falcon)
+		masterData[dataIndex].index = dataIndex;
+		masterData[dataIndex].xPos = pos1[0];
+		masterData[dataIndex].yPos = pos1[1];
+		masterData[dataIndex].zPos = pos1[2];
+		masterData[dataIndex].xDes = xRef1;
+		masterData[dataIndex].yDes = yRef1;
+		masterData[dataIndex].zDes = zRef1;
+		masterData[dataIndex].xForce = force1[0];
+		masterData[dataIndex].yForce = force1[1];
+		masterData[dataIndex].zForce = force1[2];
+
+		//Slave Data
+		slaveData[dataIndex].index = dataIndex;
+		slaveData[dataIndex].xPos = pos2[0];
+		slaveData[dataIndex].yPos = pos2[1];
+		slaveData[dataIndex].zPos = pos2[2];
+		slaveData[dataIndex].xDes = xRef2;
+		slaveData[dataIndex].yDes = yRef2;
+		slaveData[dataIndex].zDes = zRef2;
+		slaveData[dataIndex].xForce = force2[0];
+		slaveData[dataIndex].yForce = force2[1];
+		slaveData[dataIndex].zForce = force2[2];
+	}
+
+	//Display Robot Data Every 2 Seconds
+	if(dataIndex%1000 == 0)
+	{
+		//Output Robot Data to Console
+		cout << "Index: " << dataIndex << endl;
+		cout << "Position(Master): " << pos1[0] << " " << pos1[1] << " " << pos1[2] << endl;
+		cout << "Force(Master): " << force1[0] << " " << force1[1] << " " << force1[2] << endl;
+		cout << "Position(Slave): " << pos2[0] << " " << pos2[1] << " " << pos2[2] << endl;
+		cout << "Force(Slave): " << force2[0] << " " << force2[1] << " " << force2[2] << endl;
+		cout << "Time : " << dataIndex / 1000 << endl; 
+		cout << "Press 'q' to Stop" << endl;
+		if(dataIndex >= memLength){ 
+		cout << "NOT WRITING TO FILE PAST THIS POINT" << endl;
+		}
+		cout << endl;
+	}
+	//Increment Buffer Index
+	bufInd++;
+	bufInd = bufInd%BufferLength;
+
+	dataIndex++;
+	return;
+}
